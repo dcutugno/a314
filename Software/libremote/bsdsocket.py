@@ -409,10 +409,42 @@ class LibInstance:
         self.set_errno(errno)
         self.service.send_op_res(self.stream_id, result, signals_consumed)
 
-    def handle_sendto_op(self, sock: int, buf: int, len_: int, flags: int, to: int, tolen: int):
-        logger.debug('handle_sendto_op(sock=%s, buf=%s, len_=%s, flags=%s, to=%s, tolen=%s)', sock, buf, len_, flags, to, tolen)
-        result = 2**32 - 1
-        self.service.send_op_res(self.stream_id, result, 0)
+   def handle_sendto_op(self, sock: int, buf: int, len_: int, flags: int, to: int, tolen: int):
+    logger.debug('handle_sendto_op(sock=%s, buf=%s, len_=%s, flags=%s, to=%s, tolen=%s)', sock, buf, len_, flags, to, tolen)
+    
+    result = 2**32 - 1  # Default to -1 (error)
+    errno = 0
+
+    s = self.sockets.get(sock)
+    if not s:
+        errno = EBADF
+    else:
+        try:
+            # Read data from Amiga memory
+            data = self.read_mem(buf, len_)
+            
+            # Read address from Amiga memory
+            addr_data = self.read_mem(to, tolen)
+            
+            # Parse address (assuming IPv4)
+            if tolen >= 8:  # Minimum size for sockaddr_in
+                family, port = struct.unpack('>HH', addr_data[:4])
+                ip = '.'.join(map(str, addr_data[4:8]))
+                addr = (ip, port)
+                
+                # Send data
+                sent = s.sock.sendto(data, flags, addr)
+                result = sent
+            else:
+                errno = EINVAL  # Invalid argument
+        except socket.error as e:
+            errno = e.errno
+        except Exception as e:
+            logger.exception('Error in handle_sendto_op')
+            errno = EINVAL  # Generic error
+
+    self.set_errno(errno)
+    self.service.send_op_res(self.stream_id, result, 0)
 
     def handle_send_op(self, sock: int, buf: int, len_: int, flags: int):
         logger.debug('handle_send_op(sock=%s, buf=%s, len_=%s, flags=%s)', sock, buf, len_, flags)
@@ -438,9 +470,36 @@ class LibInstance:
         self.service.send_op_res(self.stream_id, result, 0)
 
     def handle_recvfrom_op(self, sock: int, buf: int, len_: int, flags: int, addr: int, addrlen: int):
-        logger.debug('handle_recvfrom_op(sock=%s, buf=%s, len_=%s, flags=%s, addr=%s, addrlen=%s)', sock, buf, len_, flags, addr, addrlen)
-        result = 2**32 - 1
-        self.service.send_op_res(self.stream_id, result, 0)
+    logger.debug('handle_recvfrom_op(sock=%s, buf=%s, len_=%s, flags=%s, addr=%s, addrlen=%s)', sock, buf, len_, flags, addr, addrlen)
+    
+    result = 2**32 - 1  # Default to -1 (error)
+    errno = 0
+
+    s = self.sockets.get(sock)
+    if not s:
+        errno = EBADF
+    else:
+        try:
+            data, address = s.sock.recvfrom(len_, flags)
+            
+            # Write received data to Amiga memory
+            self.write_mem(buf, data)
+            
+            # Write address information to Amiga memory
+            if addr and addrlen >= 8:  # Minimum size for sockaddr_in
+                ip, port = address
+                addr_data = struct.pack('>HH4s', socket.AF_INET, port, socket.inet_aton(ip))
+                self.write_mem(addr, addr_data)
+            
+            result = len(data)
+        except socket.error as e:
+            errno = e.errno
+        except Exception as e:
+            logger.exception('Error in handle_recvfrom_op')
+            errno = EINVAL  # Generic error
+
+    self.set_errno(errno)
+    self.service.send_op_res(self.stream_id, result, 0)
 
     def handle_recv_op(self, sock: int, buf: int, len_: int, flags: int):
         logger.debug('handle_recv_op(sock=%s, buf=%s, len_=%s, flags=%s)', sock, buf, len_, flags)
